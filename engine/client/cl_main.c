@@ -743,7 +743,7 @@ static void CL_WritePacket( void )
 	if( cls.demoplayback || cls.state < ca_connected || cls.state == ca_cinematic )
 		return;
 
-	if( cls.state <= ca_validate )
+	if( cls.state <= ca_connected )
 	{
 		Netchan_TransmitBits( &cls.netchan, 0, "" );
 		return;
@@ -789,12 +789,6 @@ static void CL_WritePacket( void )
 	if(( host.realtime >= cls.nextcmdtime ) && Netchan_CanPacket( &cls.netchan, true ))
 		send_command = true;
 
-	if( cl.send_reply )
-	{
-		cl.send_reply = false;
-		send_command = true;
-	}
-
 	// spectator is not sending cmds to server
 	if( cls.spectator && cls.state == ca_active && cl.delta_sequence == cl.validsequence )
 	{
@@ -819,9 +813,7 @@ static void CL_WritePacket( void )
 	{
 		int	outgoing_sequence;
 
-		if( cl_cmdrate.value > 0 ) // clamped between 10 and 100 fps
-			cls.nextcmdtime = host.realtime + bound( 0.1f, ( 1.0f / cl_cmdrate.value ), 0.01f );
-		else cls.nextcmdtime = host.realtime; // always able to send right away
+		cls.nextcmdtime = host.realtime + ( 1.0f / cl_cmdrate.value );
 
 		if( cls.lastoutgoingcommand == -1 )
 		{
@@ -1088,14 +1080,12 @@ static void CL_WriteSteamTicket( sizebuf_t *send )
 		return;
 	}
 
-#if 0 // FIXME
-	if( !Q_strcmp( cl_ticket_generator.string, "steam" )
-	{
-		i = SteamBroker_InitiateGameConnection( buf, sizeof( buf ));
-		MSG_WriteBytes( send, buf, i );
-		return;
-	}
-#endif
+	//if( !Q_strcmp( cl_ticket_generator.string, "steam" )
+	//{
+	//	i = SteamBroker_InitiateGameConnection( buf, sizeof( buf ));
+	//	MSG_WriteBytes( send, buf, i );
+	//	return;
+	//}
 
 	s = ID_GetMD5();
 	CRC32_Init( &crc );
@@ -1387,7 +1377,7 @@ static resource_t *CL_AddResource( resourcetype_t type, const char *name, int si
 static void CL_CreateResourceList( void )
 {
 	char szFileName[MAX_OSPATH];
-	byte		rgucMD5_hash[16];
+	byte rgucMD5_hash[16] = { 0 };
 	resource_t	*pNewResource;
 	int		nSize;
 	file_t		*fp;
@@ -1396,13 +1386,19 @@ static void CL_CreateResourceList( void )
 	cl.num_resources = 0;
 	memset( rgucMD5_hash, 0, sizeof( rgucMD5_hash ));
 
-	// sanitize cvar value
-	if( Q_strcmp( cl_logoext.string, "bmp" ) &&
-		 Q_strcmp( cl_logoext.string, "png" ))
-		Cvar_DirectSet( &cl_logoext, "bmp" );
+	if( cls.legacymode == PROTO_GOLDSRC )
+	{
+		// TODO: actually repack remapped.bmp into a WAD for GoldSrc servers
+		Q_strncpy( szFileName, "tempdecal.wad", sizeof( szFileName ));
+	}
+	else
+	{
+		// sanitize cvar value
+		if( Q_strcmp( cl_logoext.string, "bmp" ) && Q_strcmp( cl_logoext.string, "png" ))
+			Cvar_DirectSet( &cl_logoext, "bmp" );
 
-	Q_snprintf( szFileName, sizeof( szFileName ),
-		"logos/remapped.%s", cl_logoext.string );
+		Q_snprintf( szFileName, sizeof( szFileName ), "logos/remapped.%s", cl_logoext.string );
+	}
 	fp = FS_Open( szFileName, "rb", true );
 
 	if( !fp )
@@ -1440,7 +1436,7 @@ static qboolean CL_StringToProtocol( const char *s, connprotocol_t *proto )
 		return true;
 	}
 
-	if( !Q_stricmp( s, "goldsrc" ) || !Q_strcmp( s, "gs" ))
+	if( !Q_stricmp( s, "goldsrc" ) || !Q_stricmp( s, "gs" ))
 	{
 		*proto = PROTO_GOLDSRC;
 		return true;
@@ -1502,9 +1498,9 @@ an unconnected command.
 */
 static void CL_Rcon_f( void )
 {
-	char	message[1024];
-	netadr_t	to;
-	string command;
+	char message[1024];
+	sizebuf_t msg;
+	netadr_t to;
 	int	i;
 
 	if( !COM_CheckString( rcon_password.string ))
@@ -1513,24 +1509,7 @@ static void CL_Rcon_f( void )
 		return;
 	}
 
-	message[0] = (char)255;
-	message[1] = (char)255;
-	message[2] = (char)255;
-	message[3] = (char)255;
-	message[4] = 0;
-
 	NET_Config( true, false );	// allow remote
-
-	Q_strncat( message, C2S_RCON" ", sizeof( message ));
-	Q_strncat( message, rcon_password.string, sizeof( message ));
-	Q_strncat( message, " ", sizeof( message ) );
-
-	for( i = 1; i < Cmd_Argc(); i++ )
-	{
-		Cmd_Escape( command, Cmd_Argv( i ), sizeof( command ));
-		Q_strncat( message, command, sizeof( message ));
-		Q_strncat( message, " ", sizeof( message ));
-	}
 
 	if( cls.state >= ca_connected )
 	{
@@ -1545,10 +1524,27 @@ static void CL_Rcon_f( void )
 		}
 
 		NET_StringToAdr( rcon_address.string, &to );
-		if( to.port == 0 ) to.port = MSG_BigShort( PORT_SERVER );
+		if( to.port == 0 )
+			to.port = MSG_BigShort( PORT_SERVER );
 	}
 
-	NET_SendPacket( NS_CLIENT, Q_strlen( message ) + 1, message, to );
+	MSG_Init( &msg, "RconMessage", message, sizeof( message ));
+	MSG_WriteLong( &msg, -1 );
+	MSG_WriteStringf( &msg, C2S_RCON" %s ", rcon_password.string );
+	MSG_SeekToBit( &msg, -8, SEEK_CUR );
+
+	for( i = 1; i < Cmd_Argc(); i++ )
+	{
+		string command;
+
+		Cmd_Escape( command, Cmd_Argv( i ), sizeof( command ));
+		MSG_WriteString( &msg, command );
+		MSG_SeekToBit( &msg, -8, SEEK_CUR );
+		MSG_WriteChar( &msg, ' ' );
+	}
+	MSG_WriteByte( &msg, 0 );
+
+	NET_SendPacket( NS_CLIENT, MSG_GetNumBytesWritten( &msg ), MSG_GetData( &msg ), to );
 }
 
 
@@ -1912,7 +1908,7 @@ static void CL_QueryServer_f( void )
 	switch( proto )
 	{
 	case PROTO_GOLDSRC:
-		Netchan_OutOfBandPrint( NS_CLIENT, adr, "%cSource Engine Query", A2S_GOLDSRC_INFO );
+		Netchan_OutOfBand( NS_CLIENT, adr, sizeof( A2S_GOLDSRC_INFO ), A2S_GOLDSRC_INFO ); // includes null terminator!
 		break;
 	case PROTO_LEGACY:
 		Netchan_OutOfBandPrint( NS_CLIENT, adr, A2A_INFO" %i", PROTOCOL_LEGACY_VERSION );
@@ -2770,7 +2766,6 @@ static void CL_ReadNetMessage( void )
 		}
 
 		CL_ParseNetMessage( &net_message, parsefn );
-		cl.send_reply = true;
 	}
 
 	// build list of all solid entities per next frame (exclude clients)
@@ -3254,7 +3249,7 @@ qboolean CL_PrecacheResources( void )
 		switch( pRes->type )
 		{
 		case t_sound:
-			if( pRes->nIndex != -1 )
+			if( pRes->nIndex >= 0 && pRes->nIndex < ARRAYSIZE( cl.sound_precache ) && pRes->nIndex < ARRAYSIZE( cl.sound_index ))
 			{
 				if( FBitSet( pRes->ucFlags, RES_WASMISSING ))
 				{
@@ -3287,40 +3282,49 @@ qboolean CL_PrecacheResources( void )
 		case t_skin:
 			break;
 		case t_model:
-			cl.nummodels = Q_max( cl.nummodels, pRes->nIndex + 1 );
-			if( pRes->szFileName[0] != '*' )
+			if( pRes->nIndex >= 0 && pRes->nIndex < ARRAYSIZE( cl.models ))
 			{
-				if( pRes->nIndex != -1 )
+				cl.nummodels = Q_max( cl.nummodels, pRes->nIndex + 1 );
+				if( pRes->szFileName[0] != '*' )
 				{
-					cl.models[pRes->nIndex] = Mod_ForName( pRes->szFileName, false, true );
-
-					if( cl.models[pRes->nIndex] == NULL )
+					if( pRes->nIndex != -1 )
 					{
-						if( FBitSet( pRes->ucFlags, RES_FATALIFMISSING ))
+						cl.models[pRes->nIndex] = Mod_ForName( pRes->szFileName, false, true );
+
+						if( cl.models[pRes->nIndex] == NULL )
 						{
-							S_EndRegistration();
-							CL_Disconnect_f();
-							return false;
+							if( FBitSet( pRes->ucFlags, RES_FATALIFMISSING ))
+							{
+								S_EndRegistration();
+								CL_Disconnect_f();
+								return false;
+							}
 						}
 					}
-				}
-				else
-				{
-					CL_LoadClientSprite( pRes->szFileName );
+					else
+					{
+						CL_LoadClientSprite( pRes->szFileName );
+					}
 				}
 			}
 			break;
 		case t_decal:
-			if( !FBitSet( pRes->ucFlags, RES_CUSTOM ))
+			if( !FBitSet( pRes->ucFlags, RES_CUSTOM ) && pRes->nIndex >= 0 && pRes->nIndex < ARRAYSIZE( host.draw_decals ))
 				Q_strncpy( host.draw_decals[pRes->nIndex], pRes->szFileName, sizeof( host.draw_decals[0] ));
 			break;
 		case t_generic:
-			Q_strncpy( cl.files_precache[pRes->nIndex], pRes->szFileName, sizeof( cl.files_precache[0] ));
-			cl.numfiles = Q_max( cl.numfiles, pRes->nIndex + 1 );
+			if( pRes->nIndex >= 0 && pRes->nIndex < ARRAYSIZE( cl.files_precache ))
+			{
+				Q_strncpy( cl.files_precache[pRes->nIndex], pRes->szFileName, sizeof( cl.files_precache[0] ));
+				cl.numfiles = Q_max( cl.numfiles, pRes->nIndex + 1 );
+			}
 			break;
 		case t_eventscript:
-			Q_strncpy( cl.event_precache[pRes->nIndex], pRes->szFileName, sizeof( cl.event_precache[0] ));
-			CL_SetEventIndex( cl.event_precache[pRes->nIndex], pRes->nIndex );
+			if( pRes->nIndex >= 0 && pRes->nIndex < ARRAYSIZE( cl.event_precache ))
+			{
+				Q_strncpy( cl.event_precache[pRes->nIndex], pRes->szFileName, sizeof( cl.event_precache[0] ));
+				CL_SetEventIndex( cl.event_precache[pRes->nIndex], pRes->nIndex );
+			}
 			break;
 		default:
 			break;

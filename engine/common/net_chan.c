@@ -520,7 +520,7 @@ Netchan_OutOfBand
 Sends an out-of-band datagram
 ================
 */
-void Netchan_OutOfBand( int net_socket, netadr_t adr, int len, byte *data )
+void Netchan_OutOfBand( int net_socket, netadr_t adr, int len, const byte *data )
 {
 	byte buf[MAX_PRINT_MSG + 4] = { 0xff, 0xff, 0xff, 0xff };
 
@@ -1504,7 +1504,7 @@ transmition / retransmition of the reliable messages.
 A 0 length will still generate a packet and deal with the reliable messages.
 ================
 */
-void Netchan_TransmitBits( netchan_t *chan, int length, byte *data )
+void Netchan_TransmitBits( netchan_t *chan, int length, const byte *data )
 {
 	byte	send_buf[NET_MAX_MESSAGE];
 	qboolean	send_reliable_fragment;

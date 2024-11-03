@@ -22,17 +22,17 @@ CVAR_DEFINE_AUTO( gl_stencilbits, "8", FCVAR_GLCONFIG|FCVAR_READ_ONLY, "pixelfor
 CVAR_DEFINE_AUTO( gl_overbright, "1", FCVAR_GLCONFIG, "overbrights" );
 CVAR_DEFINE_AUTO( r_lighting_extended, "1", FCVAR_GLCONFIG, "allow to get lighting from world and bmodels" );
 CVAR_DEFINE_AUTO( r_lighting_ambient, "0.3", FCVAR_GLCONFIG, "map ambient lighting scale" );
-CVAR_DEFINE_AUTO( r_detailtextures, "1", FCVAR_ARCHIVE, "enable detail textures support" );
+CVAR_DEFINE_AUTO( r_detailtextures, "1", FCVAR_GLCONFIG, "enable detail textures support" );
 CVAR_DEFINE_AUTO( r_novis, "0", 0, "ignore vis information (perfomance test)" );
 CVAR_DEFINE_AUTO( r_nocull, "0", 0, "ignore frustrum culling (perfomance test)" );
 CVAR_DEFINE_AUTO( r_lockpvs, "0", FCVAR_CHEAT, "lockpvs area at current point (pvs test)" );
 CVAR_DEFINE_AUTO( r_lockfrustum, "0", FCVAR_CHEAT, "lock frustrum area at current point (cull test)" );
 CVAR_DEFINE_AUTO( r_traceglow, "0", FCVAR_GLCONFIG, "cull flares behind models" );
 CVAR_DEFINE_AUTO( gl_round_down, "2", FCVAR_GLCONFIG|FCVAR_READ_ONLY, "round texture sizes to nearest POT value" );
-CVAR_DEFINE( r_vbo, "gl_vbo", "0", FCVAR_ARCHIVE, "draw world using VBO (known to be glitchy)" );
-CVAR_DEFINE( r_vbo_detail, "gl_vbo_detail", "0", FCVAR_ARCHIVE, "detail vbo mode (0: disable, 1: multipass, 2: singlepass, broken decal dlights)" );
-CVAR_DEFINE( r_vbo_dlightmode, "gl_vbo_dlightmode", "1", FCVAR_ARCHIVE, "vbo dlight rendering mode (0-1)" );
-CVAR_DEFINE( r_vbo_overbrightmode, "gl_vbo_overbrightmode", "0", FCVAR_ARCHIVE, "vbo overbright rendering mode (0-1)" );
+CVAR_DEFINE( r_vbo, "gl_vbo", "0", FCVAR_GLCONFIG, "draw world using VBO (known to be glitchy)" );
+CVAR_DEFINE( r_vbo_detail, "gl_vbo_detail", "0", FCVAR_GLCONFIG, "detail vbo mode (0: disable, 1: multipass, 2: singlepass, broken decal dlights)" );
+CVAR_DEFINE( r_vbo_dlightmode, "gl_vbo_dlightmode", "1", FCVAR_GLCONFIG, "vbo dlight rendering mode (0-1)" );
+CVAR_DEFINE( r_vbo_overbrightmode, "gl_vbo_overbrightmode", "0", FCVAR_GLCONFIG, "vbo overbright rendering mode (0-1)" );
 CVAR_DEFINE_AUTO( r_ripple, "0", FCVAR_GLCONFIG, "enable software-like water texture ripple simulation" );
 CVAR_DEFINE_AUTO( r_ripple_updatetime, "0.05", FCVAR_GLCONFIG, "how fast ripple simulation is" );
 CVAR_DEFINE_AUTO( r_ripple_spawntime, "0.1", FCVAR_GLCONFIG, "how fast new ripples spawn" );
@@ -1146,10 +1146,6 @@ void GL_InitExtensions( void )
 		gEngfuncs.Cvar_SetValue( "gl_finish", 1 );
 #endif
 
-	// we do not want to write vbo code that does not use multitexture
-	if( !GL_Support( GL_ARB_VERTEX_BUFFER_OBJECT_EXT ) || !GL_Support( GL_ARB_MULTITEXTURE ) || glConfig.max_texture_units < 2 )
-		gEngfuncs.Cvar_FullSet( "gl_vbo", "0", FCVAR_READ_ONLY );
-
 	R_RenderInfo_f();
 
 	tr.framecount = tr.visframecount = 1;
@@ -1191,6 +1187,11 @@ static void GL_InitCommands( void )
 	gEngfuncs.Cvar_RegisterVariable( &r_ripple );
 	gEngfuncs.Cvar_RegisterVariable( &r_ripple_updatetime );
 	gEngfuncs.Cvar_RegisterVariable( &r_ripple_spawntime );
+	gEngfuncs.Cvar_RegisterVariable( &r_shadows );
+	gEngfuncs.Cvar_RegisterVariable( &r_vbo );
+	gEngfuncs.Cvar_RegisterVariable( &r_vbo_dlightmode );
+	gEngfuncs.Cvar_RegisterVariable( &r_vbo_overbrightmode );
+	gEngfuncs.Cvar_RegisterVariable( &r_vbo_detail );
 
 	gEngfuncs.Cvar_RegisterVariable( &gl_extensions );
 	gEngfuncs.Cvar_RegisterVariable( &gl_texture_nearest );
@@ -1228,6 +1229,7 @@ register VBO cvars and get default value
 static void R_CheckVBO( void )
 {
 	qboolean disable = false;
+	int flags = 0;
 
 	// some bad GLES1 implementations breaks dlights completely
 	if( glConfig.max_texture_units < 3 )
@@ -1240,17 +1242,18 @@ static void R_CheckVBO( void )
 		disable = true;
 #endif
 
-	if( disable )
+	// we do not want to write vbo code that does not use multitexture
+	if( !GL_Support( GL_ARB_VERTEX_BUFFER_OBJECT_EXT ) || !GL_Support( GL_ARB_MULTITEXTURE ) || glConfig.max_texture_units < 2 )
 	{
-		r_vbo.flags = r_vbo_dlightmode.flags = 0;
-		r_vbo.string = "0";
-		r_vbo_dlightmode.string = "0";
+		flags = FCVAR_READ_ONLY;
+		disable = true;
 	}
 
-	gEngfuncs.Cvar_RegisterVariable( &r_vbo );
-	gEngfuncs.Cvar_RegisterVariable( &r_vbo_dlightmode );
-	gEngfuncs.Cvar_RegisterVariable( &r_vbo_overbrightmode );
-	gEngfuncs.Cvar_RegisterVariable( &r_vbo_detail );
+	if( disable )
+	{
+		gEngfuncs.Cvar_FullSet( r_vbo.name, "0", flags );
+		gEngfuncs.Cvar_FullSet( r_vbo_dlightmode.name, "0", flags );
+	}
 }
 
 /*
@@ -1261,6 +1264,7 @@ GL_RemoveCommands
 static void GL_RemoveCommands( void )
 {
 	gEngfuncs.Cmd_RemoveCommand( "r_info" );
+	gEngfuncs.Cmd_RemoveCommand( "timerefresh" );
 }
 
 /*
@@ -1296,6 +1300,12 @@ qboolean R_Init( void )
 	tr.movevars = (movevars_t *)ENGINE_GET_PARM( PARM_GET_MOVEVARS_PTR );
 	tr.palette = (color24 *)ENGINE_GET_PARM( PARM_GET_PALETTE_PTR );
 	tr.viewent = (cl_entity_t *)ENGINE_GET_PARM( PARM_GET_VIEWENT_PTR );
+	tr.texgammatable = (byte *)ENGINE_GET_PARM( PARM_GET_TEXGAMMATABLE_PTR );
+	tr.lightgammatable = (uint *)ENGINE_GET_PARM( PARM_GET_LIGHTGAMMATABLE_PTR );
+	tr.screengammatable = (uint *)ENGINE_GET_PARM( PARM_GET_SCREENGAMMATABLE_PTR );
+	tr.lineargammatable = (uint *)ENGINE_GET_PARM( PARM_GET_LINEARGAMMATABLE_PTR );
+	tr.dlights = (dlight_t *)ENGINE_GET_PARM( PARM_GET_DLIGHTS_PTR );
+	tr.elights = (dlight_t *)ENGINE_GET_PARM( PARM_GET_ELIGHTS_PTR );
 
 	GL_SetDefaults();
 	R_CheckVBO();

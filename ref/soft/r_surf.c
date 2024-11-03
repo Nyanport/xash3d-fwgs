@@ -72,21 +72,17 @@ static void R_BuildLightMap( void );
 R_AddDynamicLights
 ===============
 */
-static void R_AddDynamicLights( msurface_t *surf )
+static void R_AddDynamicLights( const msurface_t *surf )
 {
-	float		dist, rad, minlight;
-	int		lnum, s, t, sd, td, smax, tmax;
-	float		sl, tl, sacc, tacc;
-	vec3_t		impact, origin_l;
-	mextrasurf_t	*info = surf->info;
-	int		sample_frac = 1.0;
-	float		sample_size;
-	mtexinfo_t	*tex;
-	dlight_t		*dl;
-	uint		*bl;
+	const mextrasurf_t *info = surf->info;
+	int lnum, smax, tmax;
+	int sample_frac = 1.0;
+	float sample_size;
+	mtexinfo_t *tex;
 
 	// no dlighted surfaces here
-	if( !surf->dlightbits ) return;
+	if( !surf->dlightbits )
+		return;
 
 	sample_size = gEngfuncs.Mod_SampleSizeForFace( surf );
 	smax = (info->lightextents[0] / sample_size) + 1;
@@ -104,16 +100,21 @@ static void R_AddDynamicLights( msurface_t *surf )
 
 	for( lnum = 0; lnum < MAX_DLIGHTS; lnum++ )
 	{
+		dlight_t *dl;
+		vec3_t impact, origin_l;
+		float dist, rad, minlight;
+		float sl, tl;
+		int t, monolight;
+
 		if( !FBitSet( surf->dlightbits, BIT( lnum )))
 			continue;	// not lit by this light
 
-		dl = gEngfuncs.GetDynamicLight( lnum );
+		dl = &tr.dlights[lnum];
 
 		// transform light origin to local bmodel space
 		if( !tr.modelviewIdentity )
 			Matrix4x4_VectorITransform( RI.objectMatrix, dl->origin, origin_l );
-		else
-			VectorCopy( dl->origin, origin_l );
+		else VectorCopy( dl->origin, origin_l );
 
 		rad = dl->radius;
 		dist = PlaneDiff( origin_l, surf->plane );
@@ -135,28 +136,33 @@ static void R_AddDynamicLights( msurface_t *surf )
 
 		sl = DotProduct( impact, info->lmvecs[0] ) + info->lmvecs[0][3] - info->lightmapmins[0];
 		tl = DotProduct( impact, info->lmvecs[1] ) + info->lmvecs[1][3] - info->lightmapmins[1];
-		bl = blocklights;
 
-		for( t = 0, tacc = 0; t < tmax; t++, tacc += sample_size )
+		monolight = LightToTexGamma(( dl->color.r + dl->color.g + dl->color.b ) / 3 * 4 ) * 3;
+
+		for( t = 0; t < tmax; t++ )
 		{
-			td = (tl - tacc) * sample_frac;
-			if( td < 0 ) td = -td;
+			int td = (tl - sample_size * t) * sample_frac;
+			int s;
 
-			for( s = 0, sacc = 0; s < smax; s++, sacc += sample_size, bl += 1 )
+			if( td < 0 )
+				td = -td;
+
+			for( s = 0; s < smax; s++ )
 			{
-				sd = (sl - sacc) * sample_frac;
-				if( sd < 0 ) sd = -sd;
+				int sd = (sl - sample_size * s) * sample_frac;
+				float dist;
 
-				if( sd > td ) dist = sd + (td >> 1);
-				else dist = td + (sd >> 1);
+				if( sd < 0 )
+					sd = -sd;
+
+				if( sd > td )
+					dist = sd + (td >> 1);
+				else
+					dist = td + (sd >> 1);
 
 				if( dist < minlight )
 				{
-					//printf("dlight %f\n", dist);
-					//*(void**)0 = 0;
-					bl[0] +=  ((int)((rad - dist) * 256) * gEngfuncs.LightToTexGamma( (dl->color.r + dl->color.g + dl->color.b ) / 3) * 3) / 256;
-					//bl[1] += ((int)((rad - dist) * 256) * 2.5) / 256;
-					//bl[2] += ((int)((rad - dist) * 256) * 2.5) / 256;
+					blocklights[(s + (t * smax))] += ((int)((rad - dist) * 256) * monolight ) / 256;
 				}
 			}
 		}
@@ -174,25 +180,15 @@ format in r_blocklights
 */
 static void R_BuildLightMap( void )
 {
-	int		smax, tmax;
-	uint		*bl, scale;
-	int		i, map, size, s, t;
-	int		sample_size;
-	msurface_t *surf = r_drawsurf.surf;
-	mextrasurf_t	*info = surf->info;
-	color24		*lm;
-	qboolean dynamic = 0;
+	int map, t, i;
+	const msurface_t *surf = r_drawsurf.surf;
+	const mextrasurf_t *info = surf->info;
+	const int sample_size = gEngfuncs.Mod_SampleSizeForFace( surf );
+	int smax = ( info->lightextents[0] / sample_size ) + 1;
+	int tmax = ( info->lightextents[1] / sample_size ) + 1;
+	int size = smax * tmax;
 
-	sample_size = gEngfuncs.Mod_SampleSizeForFace( surf );
-	smax = ( info->lightextents[0] / sample_size ) + 1;
-	tmax = ( info->lightextents[1] / sample_size ) + 1;
-
-	//smax = (surf->extents[0]>>4)+1;
-	//tmax = (surf->extents[1]>>4)+1;
-
-	size = smax * tmax;
-
-	if( surf->flags & SURF_CONVEYOR )
+	if( FBitSet( surf->flags, SURF_CONVEYOR ))
 	{
 		smax = ( info->lightextents[0] * 3 / sample_size ) + 1;
 		size = smax * tmax;
@@ -200,63 +196,44 @@ static void R_BuildLightMap( void )
 		return;
 	}
 
-	lm = surf->samples;
-
 	memset( blocklights, 0, sizeof( uint ) * size );
 
 	// add all the lightmaps
-	for( map = 0; map < MAXLIGHTMAPS && surf->styles[map] != 255; map++ )
+	for( map = 0; map < MAXLIGHTMAPS && surf->samples; map++ )
 	{
+		const color24 *lm = &surf->samples[map * size];
+		uint scale;
+		int i;
+
+		if( surf->styles[map] >= 255 )
+			break;
+
 		scale = tr.lightstylevalue[surf->styles[map]];
 
-		for( i = 0, bl = blocklights; i < size; i++, bl += 1, lm++ )
-		{
-			bl[0] += lm->r * scale;
-			bl[1] += lm->g * scale;
-			bl[2] += lm->b * scale;
-		}
+		for( i = 0; i < size; i++ )
+			blocklights[i] += ( lm[i].r + lm[i].g + lm[i].b ) * scale;
 	}
 
 	// add all the dynamic lights
 	if( surf->dlightframe == tr.framecount )
 		R_AddDynamicLights( surf );
 
-	// Put into texture format
-	//stride -= (smax << 2);
-	//bl = blocklights;
-
-	/*for( t = 0; t < tmax; t++, dest += stride )
-	{
-		for( s = 0; s < smax; s++ )
-		{
-			dest[0] = Q_min((bl[0] >> 7), 255 );
-			//dest[1] = Q_min((bl[1] >> 7), 255 );
-			//dest[2] = Q_min((bl[2] >> 7), 255 );
-			//dest[3] = 255;
-
-			bl += 3;
-			dest += 4;
-		}
-	}*/
 	// bound, invert, and shift
-		for (i=0 ; i<size ; i++)
-		{
-			if( blocklights[i] < 65280 )
-				t = gEngfuncs.LightToTexGammaEx( blocklights[i] >> 6 ) << 6;
-			else t = (int)blocklights[i];
+	for( i = 0; i < size; i++ )
+	{
+		if( blocklights[i] < 65280 )
+			t = LightToTexGamma( blocklights[i] >> 6 ) << 6;
+		else t = (int)blocklights[i];
 
-			if (t < 0)
-				t = 0;
-			if( t > 65535 * 3 )
-				t = 65535 * 3;
-			t = t / 2048 / 3;//(255*256 - t) >> (8 - VID_CBITS);
+		t = bound( 0, t, 65535 * 3 );
+		t = t / 2048 / 3;//(255*256 - t) >> (8 - VID_CBITS);
 
-			//if (t < (1 << 6))
-				//t = (1 << 6);
-			t = t << 8;
+		//if (t < (1 << 6))
+			//t = (1 << 6);
+		t = t << 8;
 
-			blocklights[i] = t;
-		}
+		blocklights[i] = t;
+	}
 }
 #else
 

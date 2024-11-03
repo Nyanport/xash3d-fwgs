@@ -67,7 +67,6 @@ SUBDIRS = [
 	# always configured and built
 	Subproject('public'),
 	Subproject('filesystem'),
-	Subproject('engine'),
 	Subproject('stub/server'),
 	Subproject('dllemu'),
 
@@ -86,6 +85,7 @@ SUBDIRS = [
 #	Subproject('3rdparty/freevgui',     lambda x: not x.env.DEDICATED),
 	Subproject('stub/client',           lambda x: not x.env.DEDICATED),
 	Subproject('game_launch',           lambda x: not x.env.DISABLE_LAUNCHER),
+	Subproject('engine'), # keep latest for static linking
 
 	# disable only by external dependency presense
 	Subproject('3rdparty/opus', lambda x: not x.env.HAVE_SYSTEM_OPUS and not x.env.DEDICATED),
@@ -97,7 +97,6 @@ SUBDIRS = [
 
 	# enabled on PSVita only
 	Subproject('ref/gl/vgl_shim',   lambda x: x.env.DEST_OS == 'psvita'),
-
 ]
 
 REFDLLS = [
@@ -135,6 +134,9 @@ def options(opt):
 
 	grp.add_option('--enable-bsp2', action = 'store_true', dest = 'SUPPORT_BSP2_FORMAT', default = False,
 		help = 'build engine and renderers with BSP2 map support(recommended for Quake, breaks compatibility!) [default: %(default)s]')
+
+	grp.add_option('--enable-hl25-extended-structs', action = 'store_true', dest = 'SUPPORT_HL25_EXTENDED_STRUCTS', default = False,
+		help = 'build engine and renderers with HL25 extended structs compatibility (might be required for some mods) [default: %(default)s]')
 
 	grp.add_option('--low-memory-mode', action = 'store', dest = 'LOW_MEMORY', default = 0, type = int,
 		help = 'enable low memory mode (only for devices have <128 ram)')
@@ -177,7 +179,7 @@ def configure(conf):
 	conf.load('fwgslib reconfigure compiler_optimizations')
 	if conf.options.ALLOW64:
 		conf.env.MSVC_TARGETS = ['x64']
-	elif sys.maxsize > 2 ** 32:
+	elif sys.maxsize > 2 ** 32 and not conf.options.MSVC_WINE:
 		conf.env.MSVC_TARGETS = ['amd64_x86', 'x86']
 	else:
 		conf.env.MSVC_TARGETS = ['x86']
@@ -198,7 +200,7 @@ def configure(conf):
 	if conf.env.COMPILER_CC == 'msvc':
 		conf.load('msvc_pdb')
 
-	conf.load('msvs msdev subproject clang_compilation_database strip_on_install waf_unit_test enforce_pic cmake')
+	conf.load('msvs msdev subproject clang_compilation_database strip_on_install waf_unit_test enforce_pic cmake force_32bit')
 
 	# Force XP compatibility, all build targets should add subsystem=bld.env.MSVC_SUBSYSTEM
 	if conf.env.MSVC_TARGETS[0] == 'amd64_x86' or conf.env.MSVC_TARGETS[0] == 'x86':
@@ -250,14 +252,13 @@ def configure(conf):
 	# There is now `-4` (or `--32bits`) configure flag for those
 	# who want to specifically build engine for 32-bit
 	if conf.env.DEST_OS in ['win32', 'linux'] and conf.env.DEST_CPU == 'x86_64':
-		conf.env.BIT32_MANDATORY = not conf.options.ALLOW64
+		force_32bit = not conf.options.ALLOW64
 	else:
-		conf.env.BIT32_MANDATORY = conf.options.FORCE32
+		force_32bit = conf.options.FORCE32
 
-	if conf.env.BIT32_MANDATORY:
+	if force_32bit:
 		Logs.info('WARNING: will build engine for 32-bit target')
-
-	conf.load('force_32bit')
+		conf.force_32bit(True)
 
 	cflags, linkflags = conf.get_optimization_flags()
 	cxxflags = list(cflags) # optimization flags are common between C and C++ but we need a copy
@@ -351,6 +352,7 @@ def configure(conf):
 		opt_cflags = [
 			'-Werror=declaration-after-statement',
 			'-Werror=enum-conversion',
+			'-Wno-error=enum-float-conversion', # need this for cvars
 			'-Werror=implicit-int',
 			'-Werror=implicit-function-declaration',
 			'-Werror=incompatible-pointer-types',
@@ -377,10 +379,12 @@ def configure(conf):
 	conf.env.ENABLE_UTILS  = conf.options.ENABLE_UTILS
 	conf.env.ENABLE_FUZZER = conf.options.ENABLE_FUZZER
 	conf.env.DEDICATED     = conf.options.DEDICATED
-	conf.env.SUPPORT_BSP2_FORMAT = conf.options.SUPPORT_BSP2_FORMAT
+
+	conf.define_cond('SUPPORT_BSP2_FORMAT', conf.options.SUPPORT_BSP2_FORMAT)
+	conf.define_cond('SUPPORT_HL25_EXTENDED_STRUCTS', conf.options.SUPPORT_HL25_EXTENDED_STRUCTS)
 
 	# disable game_launch compiling on platform where it's not needed
-	conf.env.DISABLE_LAUNCHER = conf.env.DEST_OS in ['android', 'nswitch', 'psvita', 'dos'] or conf.env.MAGX or conf.env.DEDICATED
+	conf.env.DISABLE_LAUNCHER = conf.env.DEST_OS in ['android', 'nswitch', 'psvita', 'dos'] or conf.env.MAGX or conf.env.DEDICATED or conf.env.STATIC_LINKING
 
 	if conf.env.SAILFISH == 'aurora':
 		conf.env.DEFAULT_RPATH = '/usr/share/su.xash.Engine/lib'

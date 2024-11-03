@@ -51,7 +51,13 @@ GNU General Public License for more details.
 //    PARM_SKY_SPHERE and PARM_SURF_SAMPLESIZE are now handled at engine side.
 //    VGUI rendering code is mostly moved back to engine.
 //    Implemented texture replacement.
-#define REF_API_VERSION 8
+// 9. Removed gamma functions. Renderer is supposed to get them through PARM_GET_*_PTR.
+//    Move hulls rendering back to engine
+//    Removed lightstyle, dynamic and entity light functions. Renderer is supposed to get them through PARM_GET_*_PTR.
+//    CL_RunLightStyles now accepts lightstyles array.
+//    Removed R_DrawTileClear and Mod_LoadMapSprite, as they're implemented on engine side
+//    Removed FillRGBABlend. Now FillRGBA accepts rendermode parameter.
+#define REF_API_VERSION 9
 
 #define TF_SKY		(TF_SKYSIDE|TF_NOMIPMAP|TF_ALLOW_NEAREST)
 #define TF_FONT		(TF_NOMIPMAP|TF_CLAMP|TF_ALLOW_NEAREST)
@@ -289,6 +295,15 @@ typedef enum
 	PARM_GET_PALETTE_PTR   = -14, // clgame.palette
 	PARM_GET_VIEWENT_PTR   = -15, // clgame.viewent
 
+	PARM_GET_TEXGAMMATABLE_PTR = -16,
+	PARM_GET_LIGHTGAMMATABLE_PTR = -17,
+	PARM_GET_SCREENGAMMATABLE_PTR = -18,
+	PARM_GET_LINEARGAMMATABLE_PTR = -19,
+
+	PARM_GET_LIGHTSTYLES_PTR = -20,
+	PARM_GET_DLIGHTS_PTR = -21,
+	PARM_GET_ELIGHTS_PTR = -22,
+
 	// implemented by ref_dll
 
 	// returns non-null integer if filtering is enabled for texture
@@ -344,7 +359,8 @@ typedef struct ref_api_s
 	int (*Mod_SampleSizeForFace)( const struct msurface_s *surf );
 	qboolean (*Mod_BoxVisible)( const vec3_t mins, const vec3_t maxs, const byte *visbits );
 	mleaf_t *(*Mod_PointInLeaf)( const vec3_t p, mnode_t *node );
-	void (*Mod_CreatePolygonsForHull)( int hullnum );
+	void (*R_DrawWorldHull)( void );
+	void (*R_DrawModelHull)( model_t *mod );
 
 	// studio models
 	void *(*R_StudioGetAnim)( studiohdr_t *m_pStudioHeader, model_t *m_pSubModel, mstudioseqdesc_t *pseqdesc );
@@ -418,17 +434,7 @@ typedef struct ref_api_s
 	void *(*SW_LockBuffer)( void );
 	void (*SW_UnlockBuffer)( void );
 
-	// gamma
-	byte (*LightToTexGamma)( byte );	// software gamma support
-	uint (*LightToTexGammaEx)( uint );	// software gamma support
-	byte (*TextureToGamma)( byte );
-	uint (*ScreenGammaTable)( uint );
-	uint (*LinearGammaTable)( uint );
-
 	// renderapi
-	lightstyle_t*	(*GetLightStyle)( int number );
-	dlight_t*	(*GetDynamicLight)( int number );
-	dlight_t*	(*GetEntityLight)( int number );
 	int		(*R_FatPVS)( const float *org, float radius, byte *visbuffer, qboolean merge, qboolean fullvis );
 	const struct ref_overview_s *( *GetOverviewParms )( void );
 	double		(*pfnTime)( void );				// Sys_DoubleTime
@@ -511,9 +517,7 @@ typedef struct ref_interface_s
 	void (*R_Set2DMode)( qboolean enable );
 	void (*R_DrawStretchRaw)( float x, float y, float w, float h, int cols, int rows, const byte *data, qboolean dirty );
 	void (*R_DrawStretchPic)( float x, float y, float w, float h, float s1, float t1, float s2, float t2, int texnum );
-	void (*R_DrawTileClear)( int texnum, int x, int y, int w, int h );
-	void (*FillRGBA)( float x, float y, float w, float h, int r, int g, int b, int a ); // in screen space
-	void (*FillRGBABlend)( float x, float y, float w, float h, int r, int g, int b, int a ); // in screen space
+	void (*FillRGBA)( int rendermode, float x, float y, float w, float h, byte r, byte g, byte b, byte a ); // in screen space
 	int  (*WorldToScreen)( const vec3_t world, vec3_t screen );  // Returns 1 if it's z clipped
 
 	// screenshot, cubemapshot
@@ -538,7 +542,7 @@ typedef struct ref_interface_s
 	// bmodel
 	void (*R_SetSkyCloudsTextures)( int solidskyTexture, int alphaskyTexture );
 	void (*GL_SubdivideSurface)( model_t *mod, msurface_t *fa );
-	void (*CL_RunLightStyles)( void );
+	void (*CL_RunLightStyles)( lightstyle_t *ls );
 
 	// sprites
 	void (*R_GetSpriteParms)( int *frameWidth, int *frameHeight, int *numFrames, int currentFrame, const model_t *pSprite );
@@ -546,7 +550,6 @@ typedef struct ref_interface_s
 
 	// model management
 	// flags ignored for everything except spritemodels
-	void (*Mod_LoadMapSprite)( struct model_s *mod, const void *buffer, size_t size, qboolean *loaded );
 	qboolean (*Mod_ProcessRenderData)( model_t *mod, qboolean create, const byte *buffer );
 	void (*Mod_StudioLoadTextures)( model_t *mod, void *data );
 

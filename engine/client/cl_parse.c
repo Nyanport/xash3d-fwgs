@@ -1506,9 +1506,15 @@ void CL_UpdateUserinfo( sizebuf_t *msg, connprotocol_t proto )
 		if( proto != PROTO_LEGACY )
 			MSG_ReadBytes( msg, player->hashedcdkey, sizeof( player->hashedcdkey ));
 
-		if( slot == cl.playernum ) gameui.playerinfo = *player;
+		if( proto == PROTO_GOLDSRC && ( !COM_CheckStringEmpty( player->userinfo ) || !COM_CheckStringEmpty( player->name )))
+			active = false;
+
+		if( active && slot == cl.playernum )
+			gameui.playerinfo = *player;
 	}
-	else
+
+
+	if( !active )
 	{
 		COM_ClearCustomizationList( &player->customdata, true );
 
@@ -1611,7 +1617,7 @@ static void CL_SendConsistencyInfo( sizebuf_t *msg, connprotocol_t proto )
 	vec3_t		mins, maxs;
 	string		filename;
 	CRC32_t		crcFile;
-	byte		md5[16];
+	byte		md5[16] = { 0 };
 	consistency_t	*pc;
 	int		i, pos;
 
@@ -1626,6 +1632,8 @@ static void CL_SendConsistencyInfo( sizebuf_t *msg, connprotocol_t proto )
 		MSG_WriteShort( msg, 0 );
 		MSG_StartBitWriting( msg );
 	}
+
+	FS_AllowDirectPaths( true );
 
 	for( i = 0; i < cl.num_consistency; i++ )
 	{
@@ -1655,6 +1663,8 @@ static void CL_SendConsistencyInfo( sizebuf_t *msg, connprotocol_t proto )
 		switch( pc->check_type )
 		{
 		case force_exactfile:
+			// servers rely on md5 not being initialized after previous file
+			// if current file doesn't exist
 			MD5_HashFile( md5, filename, NULL );
 			memcpy( &pc->value, md5, sizeof( pc->value ));
 			LittleLongSW( pc->value );
@@ -1702,6 +1712,8 @@ static void CL_SendConsistencyInfo( sizebuf_t *msg, connprotocol_t proto )
 			break;
 		}
 	}
+
+	FS_AllowDirectPaths( false );
 
 	MSG_WriteOneBit( msg, 0 );
 
